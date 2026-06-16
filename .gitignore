@@ -30,6 +30,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# local dev server logs
+*.log
+devstart.log
+devserver.log
+devserver.err.log
+
 # env files — commit .env.example, ignore everything else
 .env
 .env.local
