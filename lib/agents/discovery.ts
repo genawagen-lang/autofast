@@ -236,7 +236,8 @@ export function runDiscoveryStream(req: DiscoveryRequest): ReadableStream<Uint8A
         // Stream from OpenAI
         const sdkStream = await openai.chat.completions.create({
           model: MODELS.DISCOVERY,
-          max_tokens: 1024,
+          // max_completion_tokens (not max_tokens) for forward-compatibility with GPT-5.x.
+          max_completion_tokens: 1024,
           tools: EMIT_WORKFLOW_SPEC_TOOL,
           messages: openaiMessages,
           stream: true,

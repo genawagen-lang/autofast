@@ -3,6 +3,6 @@
 export const MODELS = {
   // Cheap model for the Discovery chat.
   DISCOVERY: process.env.OPENAI_DISCOVERY_MODEL || "gpt-4o-mini",
-  // Stronger model for the Builder (template parameter filling).
-  BUILDER: process.env.OPENAI_BUILDER_MODEL || "gpt-4o",
+  // Strong reasoning model for the Builder (template parameter filling).
+  BUILDER: process.env.OPENAI_BUILDER_MODEL || "gpt-5.5",
 } as const;

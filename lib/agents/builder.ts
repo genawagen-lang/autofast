@@ -153,7 +153,8 @@ Call fill_template_parameters with the parameter map that will make this templat
 
   const response = await openai.chat.completions.create({
     model: MODELS.BUILDER,
-    max_tokens: 2048,
+    // max_completion_tokens (not max_tokens) for GPT-5.x reasoning-model compatibility.
+    max_completion_tokens: 2048,
     tools: FILL_PARAMS_TOOL,
     tool_choice: {
       type: "function",
