@@ -44,34 +44,29 @@ export type SSEEvent =
 // System prompt
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `You are a friendly automation assistant helping non-technical users set up simple workflow automations.
+const SYSTEM_PROMPT = `You are a warm, competent automation assistant for non-technical users. You design ONE simple linear automation: a single trigger followed by 1–3 actions.
 
-Your goal is to gather the information needed to build ONE linear automation: a single trigger followed by 1 to 3 actions. Keep the conversation simple and approachable — avoid technical jargon.
+Be concise and decisive. Keep every reply to 1–2 short sentences. Ask only for details you genuinely need — ONE question at a time — and infer sensible defaults instead of over-asking. Never show technical jargon, error messages, or internal field names.
 
-SUPPORTED TRIGGERS (pick exactly one):
-- webhook / form   — something submits a form or sends data to a URL
-- schedule         — runs at a fixed time (e.g. every Monday at 9 am)
-- email            — triggered when an email arrives (e.g. a Gmail filter)
+TRIGGERS — trigger.type MUST be exactly one of these three values:
+- "webhook" — something sends data IN: a form submission, an external app calling in, OR an incoming message to a bot (e.g. a Telegram chatbot receiving a message).
+- "schedule" — runs at a fixed time (e.g. every Monday 9am).
+- "email" — runs when an email arrives.
+There is NO "telegram", "message", or "chat" trigger. If the user wants a bot that replies to incoming messages (e.g. a Telegram chatbot), use trigger.type "webhook".
 
-SUPPORTED ACTIONS (pick 1–3):
-- google_sheets_append — add a row to a Google Sheet
-- send_email           — send an email
-- telegram_send        — send a Telegram message
+ACTIONS — action.type MUST be one of these (choose 1–3):
+- "google_sheets_append" — add a row to a Google Sheet
+- "send_email" — send an email
+- "telegram_send" — send a Telegram message
 
-CONVERSATION RULES:
-1. Ask for ONE missing piece of information at a time — never overwhelm the user.
-2. Follow this order: trigger source → target app(s) → field mappings → notification target.
-3. Once you have all required fields (see below), call the emit_workflow_spec tool immediately — do NOT keep asking.
-4. Never mention "webhooks", "APIs", "JSON", or any technical term unless the user brings it up first.
-5. Rephrase technical concepts in plain English (e.g. "a link your form will send data to").
+HOW TO BEHAVE:
+- As soon as you know the trigger, at least one action, and can write a short title, call emit_workflow_spec. Don't keep interrogating the user.
+- Fill the config objects with reasonable defaults; you do NOT need every detail.
+- Set required_credentials from the apps involved (e.g. ["telegram"], or ["google_sheets","send_email"]).
+- If a request can't be done exactly with these triggers/actions, pick the CLOSEST supported setup and proceed cheerfully — never refuse or lecture about limitations.
+- For "a Telegram chatbot that answers messages": trigger "webhook", action "telegram_send", required_credentials ["telegram"]. Just build it.
 
-REQUIRED FIELDS before calling emit_workflow_spec:
-- A clear title and one-sentence description of what the automation does
-- Trigger type and basic config (e.g. schedule cron expression, or that it listens for form submissions)
-- At least one action type and what data it uses
-- Which credentials will be needed (e.g. "google_sheets" if appending to sheets)
-
-Keep responses short, warm, and encouraging. When the user is done, call emit_workflow_spec.`;
+When you have enough to proceed, call emit_workflow_spec immediately.`;
 
 // ---------------------------------------------------------------------------
 // Template mapping heuristic
@@ -108,6 +103,85 @@ function pickTemplateId(spec: {
 
   // fallback
   return "tmpl_form_to_sheet_email";
+}
+
+// ---------------------------------------------------------------------------
+// Normalization — coerce loose model output into the strict WorkflowSpec shape
+// so a model that emits, e.g., trigger.type "telegram" doesn't blow up
+// validation. We map common synonyms and infer sensible defaults.
+// ---------------------------------------------------------------------------
+
+type ActionType = "google_sheets_append" | "send_email" | "telegram_send";
+
+const TRIGGER_ALIASES: Record<string, "webhook" | "schedule" | "email"> = {
+  webhook: "webhook", form: "webhook", telegram: "webhook", message: "webhook",
+  chat: "webhook", chatbot: "webhook", bot: "webhook", http: "webhook", api: "webhook",
+  schedule: "schedule", cron: "schedule", timer: "schedule", time: "schedule", recurring: "schedule",
+  email: "email", gmail: "email", mail: "email", imap: "email", inbox: "email",
+};
+
+const ACTION_ALIASES: Record<string, ActionType> = {
+  google_sheets_append: "google_sheets_append", google_sheets: "google_sheets_append",
+  sheets: "google_sheets_append", spreadsheet: "google_sheets_append", sheet: "google_sheets_append",
+  send_email: "send_email", email: "send_email", gmail: "send_email", smtp: "send_email", mail: "send_email",
+  telegram_send: "telegram_send", telegram: "telegram_send", message: "telegram_send", reply: "telegram_send",
+};
+
+const CRED_FOR_ACTION: Record<ActionType, string> = {
+  google_sheets_append: "google_sheets",
+  send_email: "send_email",
+  telegram_send: "telegram",
+};
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+function asString(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+function normalizeEmitInput(raw: Record<string, unknown>) {
+  const trigger = asRecord(raw.trigger);
+  const triggerType =
+    TRIGGER_ALIASES[asString(trigger.type).toLowerCase().trim()] ?? "webhook";
+
+  const rawActions = Array.isArray(raw.actions) ? raw.actions : [];
+  let actions = rawActions
+    .map((a) => {
+      const obj = asRecord(a);
+      const mapped = ACTION_ALIASES[asString(obj.type).toLowerCase().trim()];
+      return mapped ? { type: mapped, config: asRecord(obj.config) } : null;
+    })
+    .filter((a): a is { type: ActionType; config: Record<string, unknown> } => a !== null)
+    .slice(0, 3);
+
+  const rawCreds = Array.isArray(raw.required_credentials)
+    ? raw.required_credentials.map(asString).filter(Boolean)
+    : [];
+
+  if (actions.length === 0) {
+    // Infer a default action from any credentials the model mentioned.
+    const lc = rawCreds.map((c) => c.toLowerCase());
+    const t: ActionType = lc.some((c) => c.includes("sheet"))
+      ? "google_sheets_append"
+      : lc.some((c) => c.includes("mail"))
+        ? "send_email"
+        : "telegram_send";
+    actions = [{ type: t, config: {} }];
+  }
+
+  const required_credentials =
+    rawCreds.length > 0
+      ? rawCreds
+      : Array.from(new Set(actions.map((a) => CRED_FOR_ACTION[a.type])));
+
+  return {
+    title: asString(raw.title).trim() || "My automation",
+    description: asString(raw.description),
+    trigger: { type: triggerType, config: asRecord(trigger.config) },
+    actions,
+    required_credentials,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -283,42 +357,62 @@ export function runDiscoveryStream(req: DiscoveryRequest): ReadableStream<Uint8A
         );
 
         if (emitCall) {
-          // Build and validate the WorkflowSpec
-          const rawInput = JSON.parse(emitCall.args) as Record<string, unknown>;
-          const id = crypto.randomUUID();
-          const templateId = pickTemplateId(
-            rawInput as { trigger: { type: string }; actions: { type: string }[] }
-          );
+          // Normalize loose model output into the strict schema (e.g. a Telegram
+          // chatbot → webhook trigger) before validating, so the user NEVER sees
+          // a raw validation error.
+          let rawInput: Record<string, unknown> = {};
+          try {
+            rawInput = JSON.parse(emitCall.args) as Record<string, unknown>;
+          } catch {
+            rawInput = {};
+          }
 
+          const normalized = normalizeEmitInput(rawInput);
           const candidate = {
-            id,
+            id: crypto.randomUUID(),
             status: "draft" as const,
-            template_id: templateId,
-            ...rawInput,
+            template_id: pickTemplateId(normalized),
+            ...normalized,
           };
 
-          // Validate with zod — throws ZodError if the model hallucinated an invalid shape
-          const spec = workflowSpecSchema.parse(candidate);
+          const result = workflowSpecSchema.safeParse(candidate);
 
-          // Persist spec and conversation
-          const [savedSpec] = await Promise.all([
-            saveSpec(req.userId, spec),
-            saveConversation(
+          if (result.success) {
+            const spec = result.data;
+            const [savedSpec] = await Promise.all([
+              saveSpec(req.userId, spec),
+              saveConversation(
+                req.userId,
+                [
+                  ...req.messages,
+                  { role: "assistant", content: accumulatedText || "[workflow spec ready]" },
+                ],
+                conversationId
+              ),
+            ]);
+
+            enqueue({
+              type: "spec_ready",
+              spec,
+              specId: savedSpec.id,
+              conversationId,
+            });
+          } else {
+            // Never surface raw validation errors. Recover with a friendly nudge.
+            console.error(
+              "Discovery: spec validation failed after normalization:",
+              JSON.stringify(result.error.issues)
+            );
+            const recover =
+              accumulatedText ||
+              "Almost there — which app should this use (Telegram, Google Sheets, or email), and what should it do?";
+            if (!accumulatedText) enqueue({ type: "delta", text: recover });
+            await saveConversation(
               req.userId,
-              [
-                ...req.messages,
-                { role: "assistant", content: accumulatedText || "[workflow spec emitted]" },
-              ],
+              [...req.messages, { role: "assistant", content: recover }],
               conversationId
-            ),
-          ]);
-
-          enqueue({
-            type: "spec_ready",
-            spec,
-            specId: savedSpec.id,
-            conversationId,
-          });
+            );
+          }
         } else {
           // Plain conversational reply — persist the updated conversation
           const updatedMessages: ChatMessage[] = [
