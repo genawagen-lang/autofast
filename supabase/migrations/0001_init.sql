@@ -80,7 +80,7 @@ create table if not exists credentials (
   id                uuid primary key default gen_random_uuid(),
   user_id           uuid not null references auth.users(id) on delete cascade,
   provider          text not null,
-  vault_secret_id   uuid,                  -- reference into vault.secrets; null in dev fallback
+  vault_secret_id   text,                  -- vault.secrets uuid (prod) or "dev_fallback:..." ref (local dev); null if unset
   status            text not null default 'active'
                       check (status in ('active','revoked','expired')),
   created_at        timestamptz not null default now(),
