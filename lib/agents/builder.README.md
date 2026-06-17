@@ -15,7 +15,7 @@ buildWorkflow(spec: WorkflowSpec): Promise<{
 ## How it works
 
 1. **Template selection** — calls `listTemplates()` from `@/lib/templates`, scores each template against the spec (trigger type + action types), picks the highest scorer. Never invents from scratch.
-2. **Parameter filling** — asks Claude (`MODELS.BUILDER`) with `tool_choice: "any"` to call `fill_template_parameters`. The LLM receives the spec and template structure only — **no credential tokens ever enter this call**.
+2. **Parameter filling** — asks OpenAI (`MODELS.BUILDER`) with a forced `tool_choice` to call `fill_template_parameters`. The LLM receives the spec and template structure only — **no credential tokens ever enter this call**.
 3. **Template application** — replaces `{{key}}` placeholders in the template JSON with the values the LLM returned.
 4. **Shape validation** — asserts `nodes[]` and `connections{}` exist on the result.
 
