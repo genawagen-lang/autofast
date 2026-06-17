@@ -8,12 +8,34 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
+  // Primary: email + password (reliable for local dev — no email delivery needed).
+  async function handlePasswordSignIn(e: React.FormEvent) {
     e.preventDefault();
+    setLoading(true);
+    setError(null);
+
+    const supabase = createClient();
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (authError) {
+      setError(authError.message);
+      setLoading(false);
+    } else {
+      // Full navigation so the server picks up the new session cookie.
+      window.location.href = "/new";
+    }
+  }
+
+  // Secondary: magic link (requires working email delivery).
+  async function handleMagicLink() {
     setLoading(true);
     setError(null);
 
@@ -39,7 +61,9 @@ export default function LoginPage() {
         <CardHeader>
           <CardTitle>Sign in</CardTitle>
           <CardDescription>
-            Enter your email to receive a magic link.
+            Use your email and password. (Local dev account:
+            {" "}
+            <strong>dev@automation.app</strong> / <strong>Password123!</strong>)
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -48,7 +72,7 @@ export default function LoginPage() {
               Check your email — we sent a magic link to <strong>{email}</strong>.
             </p>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handlePasswordSignIn} className="space-y-4">
               <Input
                 type="email"
                 placeholder="you@example.com"
@@ -57,12 +81,28 @@ export default function LoginPage() {
                 required
                 disabled={loading}
               />
+              <Input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                disabled={loading}
+              />
               {error && (
                 <p className="text-sm text-destructive">{error}</p>
               )}
               <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? "Sending…" : "Send magic link"}
+                {loading ? "Signing in…" : "Sign in"}
               </Button>
+              <button
+                type="button"
+                onClick={handleMagicLink}
+                disabled={loading || !email}
+                className="w-full text-sm text-muted-foreground underline-offset-4 hover:underline disabled:opacity-50"
+              >
+                Or email me a magic link instead
+              </button>
             </form>
           )}
         </CardContent>
