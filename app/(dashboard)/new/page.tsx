@@ -81,6 +81,12 @@ export default function NewWorkflowPage() {
         signal: controller.signal,
       });
 
+      if (response.status === 401) {
+        throw new Error(
+          "Please sign in to build an automation. Visit /login to continue."
+        );
+      }
+
       if (!response.ok || !response.body) {
         throw new Error("Could not reach the assistant. Please try again.");
       }

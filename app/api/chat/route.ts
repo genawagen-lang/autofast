@@ -13,6 +13,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { runDiscoveryStream } from "@/lib/agents/discovery";
+import { createClient } from "@/lib/supabase/server";
 
 // ---------------------------------------------------------------------------
 // Request validation schema
@@ -24,7 +25,8 @@ const chatMessageSchema = z.object({
 });
 
 const chatRequestSchema = z.object({
-  userId: z.string().min(1, "userId is required"),
+  // userId is derived from the authenticated session server-side — never trusted
+  // from the client — so it is intentionally NOT part of the request body.
   conversationId: z.string().uuid().optional(),
   messages: z
     .array(chatMessageSchema)
@@ -36,6 +38,21 @@ const chatRequestSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest) {
+  // Derive the user from the authenticated Supabase session — never trust a
+  // client-supplied userId. Writes to conversations/workflow_specs are guarded
+  // by RLS (auth.uid() = user_id), so an authenticated session is required.
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return new Response(
+      JSON.stringify({ error: "Please sign in to build an automation." }),
+      { status: 401, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
   // Parse and validate the request body
   let body: unknown;
   try {
@@ -55,10 +72,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { userId, conversationId, messages } = parsed.data;
+  const { conversationId, messages } = parsed.data;
 
-  // Build the streaming response
-  const stream = runDiscoveryStream({ userId, conversationId, messages });
+  // Build the streaming response — userId comes from the session, satisfying RLS.
+  const stream = runDiscoveryStream({ userId: user.id, conversationId, messages });
 
   return new Response(stream, {
     status: 200,
