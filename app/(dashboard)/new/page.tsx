@@ -137,10 +137,17 @@ export default function NewWorkflowPage() {
                 m.id === assistantMsgId ? { ...m, streaming: false } : m
               )
             );
-          } else if (event.type === "token" || event.delta) {
-            // Token delta
+          } else if (
+            event.type === "delta" ||
+            event.type === "token" ||
+            event.delta
+          ) {
+            // Token delta — Discovery emits { type: "delta", text }
             const token =
-              (event.token as string) ?? (event.delta as string) ?? "";
+              (event.text as string) ??
+              (event.token as string) ??
+              (event.delta as string) ??
+              "";
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantMsgId
@@ -154,6 +161,18 @@ export default function NewWorkflowPage() {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantMsgId ? { ...m, content } : m
+              )
+            );
+          } else if (event.type === "error") {
+            // Discovery emits { type: "error", message }
+            const errMsg =
+              (event.message as string) ??
+              "The assistant ran into a problem. Please try again.";
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, content: errMsg, streaming: false }
+                  : m
               )
             );
           }
