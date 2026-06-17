@@ -12,10 +12,11 @@
  * tool, which we intercept to validate, persist, and forward to the client.
  */
 
-import { anthropic } from "@/lib/anthropic/client";
-import { MODELS } from "@/lib/anthropic/models";
+import { openai } from "@/lib/openai/client";
+import { MODELS } from "@/lib/openai/models";
 import { workflowSpecSchema, type WorkflowSpec } from "@/types";
 import { saveConversation, saveSpec } from "@/lib/db";
+import type OpenAI from "openai";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,63 +115,66 @@ function pickTemplateId(spec: {
 // The schema intentionally omits `id` and `status` — we fill those ourselves.
 // ---------------------------------------------------------------------------
 
-const EMIT_WORKFLOW_SPEC_TOOL: Parameters<typeof anthropic.messages.stream>[0]["tools"] = [
+const EMIT_WORKFLOW_SPEC_TOOL: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
-    name: "emit_workflow_spec",
-    description:
-      "Call this tool when you have collected enough information to define the workflow. Do NOT call it until you have all required fields.",
-    input_schema: {
-      type: "object" as const,
-      required: ["title", "description", "trigger", "actions", "required_credentials"],
-      properties: {
-        title: {
-          type: "string",
-          description: "Short, plain-English title for the automation (e.g. 'Save contact form submissions to Google Sheets').",
-        },
-        description: {
-          type: "string",
-          description: "One sentence describing what the automation does.",
-        },
-        trigger: {
-          type: "object",
-          required: ["type", "config"],
-          properties: {
-            type: {
-              type: "string",
-              enum: ["webhook", "schedule", "email"],
-              description: "The trigger mechanism.",
-            },
-            config: {
-              type: "object",
-              description: "Trigger-specific configuration key-value pairs (e.g. {cron: '0 9 * * 1'} for schedules).",
-              additionalProperties: true,
-            },
+    type: "function",
+    function: {
+      name: "emit_workflow_spec",
+      description:
+        "Call this tool when you have collected enough information to define the workflow. Do NOT call it until you have all required fields.",
+      parameters: {
+        type: "object",
+        required: ["title", "description", "trigger", "actions", "required_credentials"],
+        properties: {
+          title: {
+            type: "string",
+            description: "Short, plain-English title for the automation (e.g. 'Save contact form submissions to Google Sheets').",
           },
-        },
-        actions: {
-          type: "array",
-          minItems: 1,
-          maxItems: 3,
-          items: {
+          description: {
+            type: "string",
+            description: "One sentence describing what the automation does.",
+          },
+          trigger: {
             type: "object",
             required: ["type", "config"],
             properties: {
               type: {
                 type: "string",
-                enum: ["google_sheets_append", "send_email", "telegram_send"],
+                enum: ["webhook", "schedule", "email"],
+                description: "The trigger mechanism.",
               },
               config: {
                 type: "object",
-                description: "Action-specific configuration key-value pairs.",
+                description: "Trigger-specific configuration key-value pairs (e.g. {cron: '0 9 * * 1'} for schedules).",
                 additionalProperties: true,
               },
             },
           },
-        },
-        required_credentials: {
-          type: "array",
-          items: { type: "string" },
-          description: "List of credential provider keys needed (e.g. ['google_sheets', 'gmail']).",
+          actions: {
+            type: "array",
+            minItems: 1,
+            maxItems: 3,
+            items: {
+              type: "object",
+              required: ["type", "config"],
+              properties: {
+                type: {
+                  type: "string",
+                  enum: ["google_sheets_append", "send_email", "telegram_send"],
+                },
+                config: {
+                  type: "object",
+                  description: "Action-specific configuration key-value pairs.",
+                  additionalProperties: true,
+                },
+              },
+            },
+          },
+          required_credentials: {
+            type: "array",
+            items: { type: "string" },
+            description: "List of credential provider keys needed (e.g. ['google_sheets', 'gmail']).",
+          },
         },
       },
     },
@@ -200,7 +204,7 @@ export function runDiscoveryStream(req: DiscoveryRequest): ReadableStream<Uint8A
       };
 
       // Guard: API key must exist
-      if (!process.env.ANTHROPIC_API_KEY) {
+      if (!process.env.OPENAI_API_KEY) {
         enqueue({
           type: "error",
           message:
@@ -220,54 +224,66 @@ export function runDiscoveryStream(req: DiscoveryRequest): ReadableStream<Uint8A
         );
         const conversationId = savedConv.id;
 
-        // Build Anthropic message list (exclude any prior system turns)
-        const anthropicMessages = req.messages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        }));
+        // Build OpenAI message list with the system prompt first.
+        const openaiMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: SYSTEM_PROMPT },
+          ...req.messages.map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          })),
+        ];
 
-        // Stream from Claude
-        const sdkStream = anthropic.messages.stream({
+        // Stream from OpenAI
+        const sdkStream = await openai.chat.completions.create({
           model: MODELS.DISCOVERY,
           max_tokens: 1024,
-          system: SYSTEM_PROMPT,
           tools: EMIT_WORKFLOW_SPEC_TOOL,
-          messages: anthropicMessages,
+          messages: openaiMessages,
+          stream: true,
         });
 
         let accumulatedText = "";
-        let toolUseBlock: { id: string; name: string; input: Record<string, unknown> } | null = null;
-        let toolInputAccumulator = "";
+        // Accumulate streamed tool-call fragments keyed by their index.
+        const toolCallAccumulators: Record<
+          number,
+          { name: string; args: string }
+        > = {};
 
-        // Stream text deltas to the client in real time
-        sdkStream.on("text", (text) => {
-          accumulatedText += text;
-          enqueue({ type: "delta", text });
-        });
+        for await (const chunk of sdkStream) {
+          const delta = chunk.choices[0]?.delta;
+          if (!delta) continue;
 
-        // Accumulate tool_use input JSON (arrives via input_json_delta)
-        sdkStream.on("inputJson", (partialJson) => {
-          toolInputAccumulator += partialJson;
-        });
+          // Stream text deltas to the client in real time
+          if (delta.content) {
+            accumulatedText += delta.content;
+            enqueue({ type: "delta", text: delta.content });
+          }
 
-        // Wait for the full response
-        const finalMessage = await sdkStream.finalMessage();
-
-        // Check for tool use
-        for (const block of finalMessage.content) {
-          if (block.type === "tool_use" && block.name === "emit_workflow_spec") {
-            toolUseBlock = {
-              id: block.id,
-              name: block.name,
-              input: block.input as Record<string, unknown>,
-            };
-            break;
+          // Accumulate tool-call name + argument JSON fragments
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index;
+              if (!toolCallAccumulators[idx]) {
+                toolCallAccumulators[idx] = { name: "", args: "" };
+              }
+              if (tc.function?.name) {
+                toolCallAccumulators[idx].name = tc.function.name;
+              }
+              if (tc.function?.arguments) {
+                toolCallAccumulators[idx].args += tc.function.arguments;
+              }
+            }
           }
         }
 
-        if (toolUseBlock) {
+        // Find an emit_workflow_spec tool call, if any
+        const emitCall = Object.values(toolCallAccumulators).find(
+          (tc) => tc.name === "emit_workflow_spec"
+        );
+
+        if (emitCall) {
           // Build and validate the WorkflowSpec
-          const rawInput = toolUseBlock.input;
+          const rawInput = JSON.parse(emitCall.args) as Record<string, unknown>;
           const id = crypto.randomUUID();
           const templateId = pickTemplateId(
             rawInput as { trigger: { type: string }; actions: { type: string }[] }

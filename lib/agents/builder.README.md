@@ -38,5 +38,5 @@ console.log(result.n8nJson);
 ## Sibling dependencies
 
 - `@/lib/templates` — `listTemplates()` (Wave 1A agent)
-- `@/lib/anthropic/client` — Anthropic SDK instance
-- `@/lib/anthropic/models` — `MODELS.BUILDER`
+- `@/lib/openai/client` — OpenAI SDK instance
+- `@/lib/openai/models` — `MODELS.BUILDER`

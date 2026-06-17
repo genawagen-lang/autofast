@@ -210,8 +210,8 @@ while (true) {
 
 | Import path          | Provided by             |
 |----------------------|-------------------------|
-| `@/lib/anthropic/client` | Foundation (Wave 0) |
-| `@/lib/anthropic/models` | Foundation (Wave 0) |
+| `@/lib/openai/client` | Foundation (Wave 0) |
+| `@/lib/openai/models` | Foundation (Wave 0) |
 | `@/types`            | Foundation (Wave 0)     |
 | `@/lib/db`           | Wave 1A sibling agent   |
 

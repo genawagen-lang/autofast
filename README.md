@@ -12,8 +12,8 @@ agent stage behind local-dev stubs.
 
 ```
 User chat ──▶ Discovery Agent ──▶ WorkflowSpec ──▶ Builder Agent ──▶ n8n JSON
- (Haiku)      (one Q at a time)   (shared          (adapts a verified   │
-                                   contract)        template, Sonnet)   ▼
+ (gpt-4o-mini)(one Q at a time)   (shared          (adapts a verified   │
+                                   contract)        template, gpt-4o)   ▼
  Dashboard ◀── Deployment ◀── approve ◀── Testing Agent ◀── Orchestrator (state machine)
  (status,     (n8n REST or                (validate JSON +
   errors)      in-memory stub)             credential status + dry-run)
@@ -33,19 +33,19 @@ app/
   (dashboard)/new                    chat (Discovery) + AI-Understanding approval card
   (dashboard)/connections            connect Google + Telegram (status pills)
   (dashboard)/workflows/[id]         Test → Deploy stepper (PASS/FAIL)
-  api/chat                           streaming Discovery endpoint (Haiku, SSE)
+  api/chat                           streaming Discovery endpoint (gpt-4o-mini, SSE)
   api/spec/[id]/{build,test,deploy}  Builder / Testing / Deployment
   api/orchestrator                   state-machine transitions
   api/credentials/{google,telegram}  OAuth + bot-token (real + dev stub)
   api/webhooks/n8n-error             failed-run sink → deployments.last_error
 lib/
-  agents/{discovery,builder,testing} the three Claude agents
+  agents/{discovery,builder,testing} the three OpenAI agents
   db/                                14-fn typed data layer (server-only)
   vault/                             Supabase Vault wrappers (+ dev fallback)
   n8n/                               REST client + in-memory stub (N8N_MODE)
   orchestrator/                      advance(specId) state machine
   templates/                         Template 1 (full) + 4 stubs + seed
-  anthropic/                         Claude client + model config
+  openai/                            OpenAI client + model config
   supabase/                          browser/server/middleware clients
 types/index.ts                       WorkflowSpec + zod + DB row types (source of truth)
 supabase/migrations, supabase/seed   schema (6 tables + RLS + Vault) + template seed
@@ -83,7 +83,7 @@ Copy `.env.example` → `.env.local` and fill in:
 
 | Key | Unlocks | Without it |
 |-----|---------|-----------|
-| `ANTHROPIC_API_KEY` | Discovery chat + Builder | chat returns a friendly error event |
+| `OPENAI_API_KEY` | Discovery chat + Builder | chat returns a friendly error event |
 | `NEXT_PUBLIC_SUPABASE_URL` / `..._ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | auth + persistence + Vault | login/persistence fail with a clear message; Vault uses a marked `dev_fallback:` path |
 | `GOOGLE_OAUTH_CLIENT_ID` / `..._SECRET` / `..._REDIRECT_URI` | real Google connect | `/connections` uses a clearly-labelled **dev stub** that marks Google "connected" |
 | `TELEGRAM_BOT_TOKEN` (or paste in UI) | real Telegram validate | dev stub token |
@@ -96,8 +96,8 @@ After setting Supabase keys, apply the schema + seed:
 
 | Constant | Default | Override |
 |----------|---------|----------|
-| `MODELS.DISCOVERY` | `claude-haiku-4-5-20251001` | `ANTHROPIC_DISCOVERY_MODEL` |
-| `MODELS.BUILDER` | `claude-sonnet-4-6` | `ANTHROPIC_BUILDER_MODEL` (e.g. `claude-opus-4-8`) |
+| `MODELS.DISCOVERY` | `gpt-4o-mini` | `OPENAI_DISCOVERY_MODEL` |
+| `MODELS.BUILDER` | `gpt-4o` | `OPENAI_BUILDER_MODEL` (e.g. `gpt-4-turbo`) |
 
 ## Verify end-to-end (after keys)
 
@@ -114,7 +114,7 @@ After setting Supabase keys, apply the schema + seed:
 
 - `npx tsc --noEmit` ✅ clean · `npm run build` ✅ clean (19 routes) · all pages render ✅
 - Credentials never reach client/LLM ✅
-- **Gated on your keys:** the live Claude pipeline run and real persistence (Anthropic +
+- **Gated on your keys:** the live LLM pipeline run and real persistence (OpenAI +
   Supabase). The n8n deploy/monitoring path runs fully on the in-memory stub today.
 
 ## Deferred to v2 (out of scope)

@@ -16,11 +16,12 @@
  *   }>
  */
 
-import { anthropic } from "@/lib/anthropic/client";
-import { MODELS } from "@/lib/anthropic/models";
+import { openai } from "@/lib/openai/client";
+import { MODELS } from "@/lib/openai/models";
 import { type WorkflowSpec, type TemplateRow } from "@/types";
 // listTemplates lives in @/lib/db (sibling db agent, Wave 1A).
 import { listTemplates } from "@/lib/db";
+import type OpenAI from "openai";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,25 +89,28 @@ function assertValidN8nJson(json: unknown): void {
 // LLM tool definition for parameter filling
 // ---------------------------------------------------------------------------
 
-const FILL_PARAMS_TOOL = [
+const FILL_PARAMS_TOOL: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
-    name: "fill_template_parameters",
-    description:
-      "Given a workflow spec and template structure, return a flat key-value map of parameters to substitute into the template. Only return parameter keys that exist in the template. Do not include credential tokens or secrets.",
-    input_schema: {
-      type: "object" as const,
-      required: ["parameters"],
-      properties: {
-        parameters: {
-          type: "object",
-          description:
-            "Key-value map of parameter substitutions. Keys must match placeholder names in the template JSON.",
-          additionalProperties: true,
+    type: "function",
+    function: {
+      name: "fill_template_parameters",
+      description:
+        "Given a workflow spec and template structure, return a flat key-value map of parameters to substitute into the template. Only return parameter keys that exist in the template. Do not include credential tokens or secrets.",
+      parameters: {
+        type: "object",
+        required: ["parameters"],
+        properties: {
+          parameters: {
+            type: "object",
+            description:
+              "Key-value map of parameter substitutions. Keys must match placeholder names in the template JSON.",
+            additionalProperties: true,
+          },
         },
       },
     },
   },
-] satisfies Parameters<typeof anthropic.messages.create>[0]["tools"];
+];
 
 // ---------------------------------------------------------------------------
 // Apply parameter map to template JSON
@@ -147,26 +151,32 @@ ${JSON.stringify(template.n8n_json_template, null, 2)}
 
 Call fill_template_parameters with the parameter map that will make this template match the spec.`;
 
-  const response = await anthropic.messages.create({
+  const response = await openai.chat.completions.create({
     model: MODELS.BUILDER,
     max_tokens: 2048,
-    system: systemPrompt,
     tools: FILL_PARAMS_TOOL,
-    tool_choice: { type: "any" },
-    messages: [{ role: "user", content: userMessage }],
+    tool_choice: {
+      type: "function",
+      function: { name: "fill_template_parameters" },
+    },
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
   });
 
-  // 3. Extract the tool-use block
+  // 3. Extract the tool-call arguments
   let params: ParameterMap = {};
-  for (const block of response.content) {
-    if (
-      block.type === "tool_use" &&
-      block.name === "fill_template_parameters"
-    ) {
-      const input = block.input as { parameters?: ParameterMap };
-      params = input.parameters ?? {};
-      break;
-    }
+  const toolCall = response.choices[0]?.message?.tool_calls?.[0];
+  if (
+    toolCall &&
+    toolCall.type === "function" &&
+    toolCall.function.name === "fill_template_parameters"
+  ) {
+    const input = JSON.parse(toolCall.function.arguments) as {
+      parameters?: ParameterMap;
+    };
+    params = input.parameters ?? {};
   }
 
   // 4. Apply parameters to the template JSON
