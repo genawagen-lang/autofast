@@ -30,10 +30,60 @@
 
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { getSpec, saveDeployment, updateSpecStatus } from "@/lib/db";
+import {
+  getSpec,
+  saveDeployment,
+  updateSpecStatus,
+  getDecryptedCredential,
+} from "@/lib/db";
 import { buildWorkflow } from "@/lib/agents/builder";
-import { getN8nClient } from "@/lib/n8n";
+import { getN8nClient, type N8nClient } from "@/lib/n8n";
 import { type WorkflowSpec } from "@/types";
+
+/**
+ * Create the matching credentials in n8n's own store (from our vaulted tokens)
+ * and attach them to the relevant nodes, so the workflow can activate.
+ * Currently handles Telegram (telegramApi). Other providers (Google OAuth, SMTP)
+ * are left for the user to attach in the n8n UI.
+ */
+async function attachN8nCredentials(
+  userId: string,
+  n8nJson: unknown,
+  client: N8nClient
+): Promise<unknown> {
+  if (typeof n8nJson !== "object" || n8nJson === null) return n8nJson;
+  const obj = JSON.parse(JSON.stringify(n8nJson)) as Record<string, unknown>;
+  const nodes = Array.isArray(obj.nodes) ? (obj.nodes as Record<string, unknown>[]) : [];
+
+  const telegramNodes = nodes.filter(
+    (n) => typeof n.type === "string" && (n.type as string).includes("telegram")
+  );
+  if (telegramNodes.length > 0) {
+    const token = await getDecryptedCredential(userId, "telegram");
+    if (token) {
+      const name = `AutomationApp Telegram (${userId.slice(0, 8)})`;
+      try {
+        const { id: credId } = await client.createCredential({
+          name,
+          type: "telegramApi",
+          data: { accessToken: token },
+        });
+        for (const node of telegramNodes) {
+          node.credentials = {
+            ...(typeof node.credentials === "object" && node.credentials
+              ? node.credentials
+              : {}),
+            telegramApi: { id: credId, name },
+          };
+        }
+      } catch (err) {
+        console.warn("[deploy] could not create n8n Telegram credential:", err);
+      }
+    }
+  }
+
+  return obj;
+}
 
 const paramsSchema = z.object({ id: z.string().uuid() });
 
@@ -110,14 +160,29 @@ export async function POST(
 
     // Push to n8n
     const client = getN8nClient();
+    // Create + attach n8n-side credentials (e.g. Telegram) so it can activate.
+    n8nJson = await attachN8nCredentials(row.user_id, n8nJson, client);
     const { id: n8nWorkflowId } = await client.createWorkflow(n8nJson);
-    await client.activateWorkflow(n8nWorkflowId);
+
+    // Activation can fail if a node still needs a credential attached in n8n.
+    // The workflow is already created/visible, so don't fail the whole deploy —
+    // record it as created and let the user finish wiring it in n8n.
+    let activated = true;
+    let activationNote: string | undefined;
+    try {
+      await client.activateWorkflow(n8nWorkflowId);
+    } catch (actErr: unknown) {
+      activated = false;
+      activationNote =
+        actErr instanceof Error ? actErr.message : "Activation failed";
+      console.warn(`[deploy] workflow ${n8nWorkflowId} created but not activated:`, activationNote);
+    }
 
     // Persist deployment record
     const deployment = await saveDeployment({
       spec_id: id,
       n8n_workflow_id: n8nWorkflowId,
-      status: "active",
+      status: activated ? "active" : "created",
     });
 
     // Advance spec status to deployed
@@ -127,7 +192,8 @@ export async function POST(
       {
         deploymentId: deployment.id,
         n8nWorkflowId,
-        status: "active",
+        status: activated ? "active" : "created",
+        activationNote,
       },
       { status: 200 }
     );

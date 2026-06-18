@@ -25,6 +25,12 @@ export interface N8nClient {
   deleteWorkflow(id: string): Promise<void>;
   /** Fetch a workflow by id. Throws if the workflow is not found. */
   getWorkflow(id: string): Promise<unknown>;
+  /** Create a credential in n8n's own store. Returns the new credential id. */
+  createCredential(input: {
+    name: string;
+    type: string;
+    data: Record<string, unknown>;
+  }): Promise<{ id: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,10 +68,18 @@ function buildLiveClient(): N8nClient {
 
   return {
     createWorkflow(json: unknown) {
-      return request<{ id: string }>("POST", "/workflows", json);
+      // n8n's public API only accepts { name, nodes, connections, settings } on
+      // create and rejects extra/read-only fields (active, id, tags, staticData,
+      // pinData, versionId, meta) and unknown settings keys. Sanitize first.
+      return request<{ id: string }>(
+        "POST",
+        "/workflows",
+        toN8nCreatePayload(json)
+      );
     },
     activateWorkflow(id: string) {
-      return request<void>("PATCH", `/workflows/${id}/activate`);
+      // n8n public API uses POST (not PATCH) for activate.
+      return request<void>("POST", `/workflows/${id}/activate`);
     },
     deleteWorkflow(id: string) {
       return request<void>("DELETE", `/workflows/${id}`);
@@ -73,6 +87,49 @@ function buildLiveClient(): N8nClient {
     getWorkflow(id: string) {
       return request<unknown>("GET", `/workflows/${id}`);
     },
+    createCredential(input) {
+      return request<{ id: string }>("POST", "/credentials", input);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Payload sanitization for n8n's public API create endpoint
+// ---------------------------------------------------------------------------
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object";
+}
+
+/** Drop credential refs that are still unresolved placeholder strings — n8n
+ *  expects { id, name } objects, and rejects bare strings. Leaving them out
+ *  lets the workflow import; the user attaches the credential in the n8n UI. */
+function sanitizeNode(node: unknown): unknown {
+  if (!isObject(node)) return node;
+  const out: Record<string, unknown> = { ...node };
+  if (isObject(out.credentials)) {
+    const cleaned: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(out.credentials)) {
+      if (isObject(v) && "id" in v) cleaned[k] = v;
+    }
+    if (Object.keys(cleaned).length > 0) out.credentials = cleaned;
+    else delete out.credentials;
+  }
+  return out;
+}
+
+function toN8nCreatePayload(json: unknown): {
+  name: string;
+  nodes: unknown[];
+  connections: Record<string, unknown>;
+  settings: Record<string, unknown>;
+} {
+  const wf = isObject(json) ? json : {};
+  return {
+    name: typeof wf.name === "string" ? wf.name : "Automation",
+    nodes: Array.isArray(wf.nodes) ? wf.nodes.map(sanitizeNode) : [],
+    connections: isObject(wf.connections) ? wf.connections : {},
+    settings: { executionOrder: "v1" },
   };
 }
 
@@ -133,6 +190,11 @@ function buildStubClient(): N8nClient & {
       const wf = stubStore.get(id);
       if (!wf) throw new Error(`Stub: workflow ${id} not found`);
       return wf;
+    },
+
+    async createCredential() {
+      // Stub: fabricate a credential id; the stub doesn't actually run nodes.
+      return { id: crypto.randomUUID() };
     },
   };
 }
