@@ -17,9 +17,11 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { advance } from "@/lib/orchestrator";
+import { updateSpecStatus } from "@/lib/db";
 
 const bodySchema = z.object({
   specId: z.string().uuid("specId must be a UUID"),
+  action: z.string().optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -41,9 +43,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { specId } = parsed.data;
+  const { specId, action } = parsed.data;
 
   try {
+    // "retry" re-runs the build/test pipeline from a failed (error) spec by
+    // resetting it to draft first (error is otherwise a terminal no-op state).
+    if (action === "retry") {
+      await updateSpecStatus(specId, "draft");
+    }
     const result = await advance(specId);
     return Response.json(result, { status: 200 });
   } catch (err: unknown) {

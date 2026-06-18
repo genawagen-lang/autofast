@@ -88,14 +88,53 @@ export const TEMPLATES: TemplateDefinition[] = [
     id: "tpl-webhook-telegram-notify",
     name: "Webhook → Telegram Notification",
     description:
-      "Receives a webhook POST and forwards a formatted message to a Telegram bot/channel. Ideal for alerting on external events.",
+      "Receives a webhook POST and forwards a formatted message to a Telegram bot/channel. Ideal for alerting on external events or a simple reply bot.",
     trigger_type: "webhook",
     action_types: ["telegram_send"],
     required_credentials: ["telegram"],
     n8n_json_template: {
-      _todo: "Full n8n workflow JSON to be authored in a later sprint",
-      nodes: [],
-      connections: {},
+      name: "Webhook to Telegram Notification",
+      nodes: [
+        {
+          id: "node-webhook-trigger",
+          name: "Webhook Trigger",
+          type: "n8n-nodes-base.webhook",
+          typeVersion: 1,
+          position: [240, 300],
+          parameters: {
+            httpMethod: "POST",
+            path: "{{webhook_path}}",
+            responseMode: "onReceived",
+            responseData: "allEntries",
+          },
+        },
+        {
+          id: "node-telegram-send",
+          name: "Send Telegram Message",
+          type: "n8n-nodes-base.telegram",
+          typeVersion: 1.2,
+          position: [480, 300],
+          credentials: { telegramApi: "{{telegram_credential_name}}" },
+          parameters: {
+            resource: "message",
+            operation: "sendMessage",
+            chatId: "{{chat_id}}",
+            text: "{{message_text}}",
+            additionalFields: {},
+          },
+        },
+      ],
+      connections: {
+        "Webhook Trigger": {
+          main: [[{ node: "Send Telegram Message", type: "main", index: 0 }]],
+        },
+      },
+      settings: { executionOrder: "v1" },
+      staticData: null,
+      tags: [],
+      pinData: {},
+      versionId: "1.0.0",
+      meta: { instanceId: "automation-app" },
     },
   },
 

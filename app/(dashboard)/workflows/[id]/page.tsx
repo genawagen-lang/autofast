@@ -18,56 +18,50 @@ import { Badge } from "@/components/ui/badge";
 import { WorkflowStepper, Step, StepStatus } from "@/components/workflow/WorkflowStepper";
 import { WorkflowSpec } from "@/types";
 
-// What the orchestrator can return
+// What the orchestrator actually returns (WorkflowSpec statuses + detail).
 interface OrchestratorResponse {
   status:
-    | "building"
+    | "draft" // build in progress
     | "needs_credentials"
     | "testing"
-    | "test_passed"
-    | "test_failed"
     | "ready"
     | "deployed"
     | "error";
-  detail?: string;
-  preview?: string;      // shown on test_passed
-  failReason?: string;   // shown on test_failed
-  failStep?: string;     // which step failed
+  detail?: string; // preview text on ready; failure reason on error
 }
 
-// Map orchestrator status → which stepper step is active/done
+// Map orchestrator status → which stepper step is active/done/error
 function buildSteps(
   status: OrchestratorResponse["status"] | null,
-  detail?: string,
-  failReason?: string,
-  failStep?: string
+  detail?: string
 ): Step[] {
   function stepStatus(
     phase: "build" | "connect" | "test" | "deploy"
   ): StepStatus {
     if (!status) return "pending";
+
+    if (status === "error") {
+      // Build/connect completed; the test step is where it failed; deploy pending.
+      if (phase === "deploy") return "pending";
+      if (phase === "test") return "error";
+      return "done";
+    }
+    if (status === "deployed") return "done";
+    if (status === "ready") {
+      // Everything passed; waiting for the user to approve & deploy.
+      return phase === "deploy" ? "active" : "done";
+    }
+
     const order = ["build", "connect", "test", "deploy"];
-    const phaseIndex = order.indexOf(phase);
-    const statusPhase: Record<OrchestratorResponse["status"], string> = {
-      building: "build",
+    const phaseOf: Record<string, "build" | "connect" | "test" | "deploy"> = {
+      draft: "build",
       needs_credentials: "connect",
       testing: "test",
-      test_passed: "test",
-      test_failed: "test",
-      ready: "test",
-      deployed: "deploy",
-      error: failStep ?? "build",
     };
-    const currentPhase = statusPhase[status];
-    const currentIndex = order.indexOf(currentPhase);
-
+    const currentIndex = order.indexOf(phaseOf[status] ?? "build");
+    const phaseIndex = order.indexOf(phase);
     if (phaseIndex < currentIndex) return "done";
-    if (phaseIndex === currentIndex) {
-      if (status === "test_failed" && phase === "test") return "error";
-      if (status === "deployed" && phase === "deploy") return "done";
-      if (status === "ready" && phase === "test") return "done";
-      return "active";
-    }
+    if (phaseIndex === currentIndex) return "active";
     return "pending";
   }
 
@@ -92,10 +86,7 @@ function buildSteps(
       label: "Running a test",
       description: "We're doing a safe dry-run to make sure everything works.",
       status: stepStatus("test"),
-      errorMessage:
-        status === "test_failed" && failReason
-          ? failReason
-          : undefined,
+      errorMessage: status === "error" ? detail : undefined,
     },
     {
       id: "deploy",
@@ -173,9 +164,9 @@ export default function WorkflowDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [specId]);
 
-  // Auto-poll while actively building or testing
+  // Auto-poll while a transient in-progress status is showing.
   useEffect(() => {
-    const liveStatuses = new Set(["building", "testing"]);
+    const liveStatuses = new Set(["draft", "testing"]);
     if (!orchStatus || !liveStatuses.has(orchStatus.status)) return;
 
     const timer = setTimeout(() => advance(), 3000);
@@ -184,17 +175,23 @@ export default function WorkflowDetailPage() {
 
   async function handleDeploy() {
     setDeploying(true);
+    setError(null);
     try {
-      const res = await fetch("/api/orchestrator", {
+      // Deploy is handled by the dedicated deploy route (spec must be "ready").
+      const res = await fetch(`/api/spec/${specId}/deploy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ specId, action: "deploy" }),
+        body: JSON.stringify({}),
       });
-      if (!res.ok) throw new Error("Deploy failed");
-      const data = (await res.json()) as OrchestratorResponse;
-      setOrchStatus(data);
-    } catch {
-      setError("Deployment failed. Please try again.");
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "Deploy failed");
+      }
+      setOrchStatus({ status: "deployed" });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Deployment failed. Please try again."
+      );
     } finally {
       setDeploying(false);
     }
@@ -206,16 +203,15 @@ export default function WorkflowDetailPage() {
     setRetrying(false);
   }
 
-  const steps = buildSteps(
-    orchStatus?.status ?? null,
-    orchStatus?.detail,
-    orchStatus?.failReason,
-    orchStatus?.failStep
-  );
+  // Show the build step as active while the very first advance is in flight.
+  const displayStatus: OrchestratorResponse["status"] | null =
+    orchStatus?.status ?? (polling ? "draft" : null);
+
+  const steps = buildSteps(displayStatus, orchStatus?.detail);
 
   const isDeployed = orchStatus?.status === "deployed";
-  const isReady = orchStatus?.status === "ready" || orchStatus?.status === "test_passed";
-  const isFailed = orchStatus?.status === "test_failed";
+  const isReady = orchStatus?.status === "ready";
+  const isError = orchStatus?.status === "error";
   const needsCredentials = orchStatus?.status === "needs_credentials";
 
   return (
@@ -291,7 +287,7 @@ export default function WorkflowDetailPage() {
         )}
 
         {/* Test PASS result */}
-        {isReady && orchStatus?.preview && (
+        {isReady && orchStatus?.detail && (
           <Card className="border-green-600/30 bg-green-50/50">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm text-green-700">
@@ -300,8 +296,33 @@ export default function WorkflowDetailPage() {
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                {orchStatus.preview}
+                {orchStatus.detail}
               </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Error result */}
+        {isError && (
+          <Card className="border-destructive/40 bg-destructive/5">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm text-destructive">
+                We couldn&apos;t finish setting this up
+              </CardTitle>
+              <CardDescription>
+                {orchStatus?.detail ??
+                  "Something went wrong while building or testing this automation."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRetry}
+                disabled={retrying}
+              >
+                {retrying ? "Trying again…" : "Try again"}
+              </Button>
             </CardContent>
           </Card>
         )}
@@ -332,16 +353,6 @@ export default function WorkflowDetailPage() {
 
         {/* CTA buttons */}
         <div className="flex gap-3">
-          {isFailed && (
-            <Button
-              variant="outline"
-              onClick={handleRetry}
-              disabled={retrying}
-            >
-              {retrying ? "Retrying…" : "Retry test"}
-            </Button>
-          )}
-
           {isReady && !isDeployed && (
             <Button onClick={handleDeploy} disabled={deploying} className="w-full">
               {deploying ? "Deploying…" : "Approve & deploy"}
