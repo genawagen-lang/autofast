@@ -86,55 +86,64 @@ export const TEMPLATES: TemplateDefinition[] = [
   // -----------------------------------------------------------------------
   {
     id: "tpl-webhook-telegram-notify",
-    name: "Webhook → Telegram Notification",
+    name: "Telegram AI Chatbot",
     description:
-      "Receives a webhook POST and forwards a formatted message to a Telegram bot/channel. Ideal for alerting on external events or a simple reply bot.",
+      "A Telegram bot that answers user messages with AI (Telegram Trigger → OpenAI → reply). The OpenAI credential is created from the app's key at deploy time.",
     trigger_type: "webhook",
     action_types: ["telegram_send"],
     required_credentials: ["telegram"],
     n8n_json_template: {
-      name: "Webhook to Telegram Notification",
+      name: "Telegram AI Bot",
       nodes: [
         {
-          id: "node-webhook-trigger",
-          name: "Webhook Trigger",
-          type: "n8n-nodes-base.webhook",
-          typeVersion: 1,
+          id: "tg-trigger",
+          name: "Telegram Trigger",
+          type: "n8n-nodes-base.telegramTrigger",
+          typeVersion: 1.2,
           position: [240, 300],
+          parameters: { updates: ["message"], additionalFields: {} },
+        },
+        {
+          id: "openai",
+          name: "OpenAI",
+          type: "n8n-nodes-base.httpRequest",
+          typeVersion: 4.2,
+          position: [480, 300],
           parameters: {
-            httpMethod: "POST",
-            path: "{{webhook_path}}",
-            responseMode: "onReceived",
-            responseData: "allEntries",
+            method: "POST",
+            url: "https://api.openai.com/v1/chat/completions",
+            authentication: "predefinedCredentialType",
+            nodeCredentialType: "openAiApi",
+            sendBody: true,
+            specifyBody: "json",
+            jsonBody:
+              '={{ JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "system", content: "You are a helpful Telegram assistant. Answer concisely." }, { role: "user", content: $json.message.text }] }) }}',
           },
         },
         {
-          id: "node-telegram-send",
-          name: "Send Telegram Message",
+          id: "tg-send",
+          name: "Reply on Telegram",
           type: "n8n-nodes-base.telegram",
           typeVersion: 1.2,
-          position: [480, 300],
-          credentials: { telegramApi: "{{telegram_credential_name}}" },
+          position: [720, 300],
           parameters: {
             resource: "message",
             operation: "sendMessage",
-            chatId: "{{chat_id}}",
-            text: "{{message_text}}",
+            chatId: '={{ $("Telegram Trigger").item.json.message.chat.id }}',
+            text: "={{ $json.choices[0].message.content }}",
             additionalFields: {},
           },
         },
       ],
       connections: {
-        "Webhook Trigger": {
-          main: [[{ node: "Send Telegram Message", type: "main", index: 0 }]],
+        "Telegram Trigger": {
+          main: [[{ node: "OpenAI", type: "main", index: 0 }]],
+        },
+        OpenAI: {
+          main: [[{ node: "Reply on Telegram", type: "main", index: 0 }]],
         },
       },
       settings: { executionOrder: "v1" },
-      staticData: null,
-      tags: [],
-      pinData: {},
-      versionId: "1.0.0",
-      meta: { instanceId: "automation-app" },
     },
   },
 

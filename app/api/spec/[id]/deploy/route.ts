@@ -82,6 +82,34 @@ async function attachN8nCredentials(
     }
   }
 
+  // OpenAI: nodes that use the predefined openAiApi credential (e.g. the AI
+  // chatbot's HTTP Request node). Created from the app's OPENAI_API_KEY.
+  const openAiNodes = nodes.filter((n) => {
+    const params = typeof n.parameters === "object" && n.parameters ? n.parameters : {};
+    return (params as Record<string, unknown>).nodeCredentialType === "openAiApi";
+  });
+  const openAiKey = process.env.OPENAI_API_KEY;
+  if (openAiNodes.length > 0 && openAiKey) {
+    const name = `AutomationApp OpenAI (${userId.slice(0, 8)})`;
+    try {
+      const { id: credId } = await client.createCredential({
+        name,
+        type: "openAiApi",
+        data: { apiKey: openAiKey },
+      });
+      for (const node of openAiNodes) {
+        node.credentials = {
+          ...(typeof node.credentials === "object" && node.credentials
+            ? node.credentials
+            : {}),
+          openAiApi: { id: credId, name },
+        };
+      }
+    } catch (err) {
+      console.warn("[deploy] could not create n8n OpenAI credential:", err);
+    }
+  }
+
   return obj;
 }
 
